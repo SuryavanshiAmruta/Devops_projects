@@ -1,0 +1,111 @@
+pipeline { 
+    agent any 
+        tools { 
+            maven 'maven' 
+        } 
+        environment {
+            IMAGE_NAME = "suryavanshiamruta/jenkins-cicd-demo"
+        }
+        stages { 
+            stage('Checkout') { 
+                steps { 
+                    git branch: 'main', 
+                    url: 'https://github.com/SuryavanshiAmruta/Devops_project_1.git' 
+                } 
+            }
+            stage('Update Version') {
+                steps {
+                    script {
+                         def newVersion = "1.0.${BUILD_NUMBER}"
+                         echo "Updating version to ${newVersion}"
+
+                         sh """
+                         mvn versions:set \
+                         -DnewVersion=${newVersion} \
+                         -DgenerateBackupPoms=false
+                         """
+                    }
+                }
+            }
+            stage('Build') {
+                steps {
+                    echo "Building project..."
+                    sh 'mvn clean compile'
+                }
+            }
+            stage('Unit Test') {
+                steps {
+                    echo "Running tests..."
+                    sh 'mvn test'
+                }
+            }
+            stage('Package') {
+                steps {
+                    echo "Creating JAR..."
+                    sh 'mvn package'
+                }
+            }
+            stage('SonarQube Scan') {
+                steps {
+                    withSonarQubeEnv('sonarqube') {
+                        sh '''
+                        mvn sonar:sonar \
+                        -Dsonar.projectKey=jenkins-demo
+                        '''
+                    }
+                }
+            }
+            stage('Quality Gate') { 
+                steps { 
+                    timeout(time: 5, unit: 'MINUTES') { 
+                        waitForQualityGate abortPipeline: true
+                        }
+                    } 
+            } 
+            stage('Upload Artifact to Nexus') {
+                steps {
+                    echo "Uploading JAR to Nexus..."
+                    sh 'mvn deploy'
+                }
+            }
+            stage('Build Docker Image') {
+                steps {
+                    sh '''
+                    docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+                    docker tag ${IMAGE_NAME}:$BUILD_NUMBER ${IMAGE_NAME}:latest
+                    '''
+                }
+            }
+            stage('Push Docker Image') {
+                steps {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'dockerhub',
+                        usernameVariable: 'DOCKER_USERNAME',
+                        passwordVariable: 'DOCKER_PASSWORD'
+                    )]) {
+                        sh '''
+                        echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
+                        docker push ${IMAGE_NAME}:${BUILD_NUMBER}
+                        docker push ${IMAGE_NAME}:latest
+                        '''
+                    }
+                }
+            }
+            stage('Deploy') {
+                steps {
+                    sh 'pwd'
+                    sh 'ansible-playbook -i ansible/inventory ansible/deploy.yml'
+                }
+            }
+        }
+    post {
+            success {
+                echo "Pipeline Completed Successfully"
+            }
+            failure {
+                echo "Pipeline Failed"
+            }
+    
+        }
+        
+}
